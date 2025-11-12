@@ -137,17 +137,6 @@ def compute_performance_profiles(solvers, problems_type):
                                              'performance_profiles.csv')
     df_performance_profiles.to_csv(performance_profiles_file, index=False)
 
-    # Plot performance profiles
-    # import matplotlib.pylab as plt
-    # for s in solvers:
-    #     plt.plot(tau_vec, rho[s], label=s)
-    # plt.legend(loc='best')
-    # plt.ylabel(r'$\rho_{s}$')
-    # plt.xlabel(r'$\tau$')
-    # plt.grid()
-    # plt.xscale('log')
-    # plt.show(block=False)
-
 def geom_mean(t, shift=10.):
     """Compute the shifted geometric mean using formula from
     http://plato.asu.edu/ftp/shgeom.html
@@ -225,7 +214,6 @@ def compute_failure_rates(solvers, problems_type):
 
 def compute_stats_info(solvers, benchmark_type,
                        problems=None,
-                       high_accuracy=False,
                        performance_profiles=True):
 
     print(f"solvers: {solvers}")
@@ -255,21 +243,19 @@ def main():
     parser = argparse.ArgumentParser(description='Performance statistics computation')
     parser.add_argument('--high_accuracy', help='Test with high accuracy', default=False,
                         action='store_true')
-    parser.add_argument('--problem_set', help='Which benchmark to use (Maros, NetLib)', default='Maros')
     
     args = parser.parse_args()
     high_accuracy = args.high_accuracy
-    problem_set = args.problem_set
-    
-    if (problem_set != "Maros") and (problem_set != 'NetLib'):
-        print(f"problme_set must be either Maros or NetLib")
-        sys.exit(1)
+    problem_set = 'Maros'
     
     solvers = [GUROBI, pdqp]
     
-    OUTPUT_FOLDER = problem_set
+    if high_accuracy:
+        OUTPUT_FOLDER = problem_set + '_high_accuracy'
+    else:
+        OUTPUT_FOLDER = problem_set
         
-    compute_stats_info(solvers, OUTPUT_FOLDER, high_accuracy=high_accuracy)
+    compute_stats_info(solvers, OUTPUT_FOLDER)
     return
 
 if __name__ == "__main__":
