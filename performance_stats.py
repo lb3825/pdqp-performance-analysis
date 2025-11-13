@@ -77,201 +77,8 @@ PDQP_STATUS_MAP = {"TERMINATION_REASON_OPTIMAL": OPTIMAL,
 script_dir = os.path.dirname(os.path.abspath(__file__))
 results_dir = os.path.join(script_dir, "results")
 OUTPUT_FOLDER = None
-        
-def determine_prob_date_mat(path):
-    try:
-        mat_dict = spio.loadmat(path)
-    except Exception as e:
-        print(f"Error loading problem data: {e}")
-        # Saving failed problem path
-        failed_load = "../../osqp/plot/failed_load.csv"
-        file_exists = os.path.exists(failed_load)
-        file_is_empty = os.path.getsize(failed_load) == 0 if file_exists else True
-        
-        with open(failed_load, mode='a', newline='', encoding='utf8') as cvsfile:
-            writer = csv.writer(cvsfile)
-            if file_is_empty:
-                writer.writerow(['failed_load_path'])
-            writer.writerow([path])
-        sys.exit(1)
-        
-    print(f"path: {path}")
-    P = mat_dict["P"].astype(float).tocsc()
-    q = mat_dict["q"].T.flatten().astype(float)
-    if path.endswith('_Maros_Meszaros.mat'):
-        r = mat_dict['r'].T.flatten().astype(float)[0]
-    else:
-        r = 0
-    A = mat_dict["A"].astype(float).tocsc()
-    l = mat_dict["l"].T.flatten().astype(float)
-    u = mat_dict["u"].T.flatten().astype(float)
-    
-    n = mat_dict["n"].T.flatten().astype(int)[0]
-    m = mat_dict["m"].T.flatten().astype(int)[0]
-    
-    return P, q, r, A, l, u, n, m
 
-def determine_prob_date(path):
-    # Define problem data
-    name = os.path.basename(path)[:-4]
-    # Removes the "_Maros_Meszaros" or "_NetLib" at end of problem name
-    pattern = re.compile(r'(_Maros_Meszaros|_NetLib)$')
-    name = pattern.sub('', name)
-    # print(f"name: {name}")
-    # print(f"Solving problem: {name}")
-
-    if path.lower().endswith('.mat'):
-        P, q, r, A, l, u, n, m = determine_prob_date_mat(path)
-    else:
-        print(f"Error the file is neither a .mat or a .mps file")
-        
-        # Saving failed problem path
-        failed_path = "../../osqp/plot/failed_path.csv"
-        file_exists = os.path.exists(failed_path)
-        file_is_empty = os.path.getsize(failed_path) == 0 if file_exists else True
-        
-        with open(failed_path, mode='a', newline='', encoding='utf8') as cvsfile:
-            writer = csv.writer(cvsfile)
-            if file_is_empty:
-                writer.writerow(['failed_path'])
-            writer.writerow([path])
-        # Need to save the name of the problem for which this occures
-        sys.exit(1)
-        
-    assert A.shape == (m, n)
-    
-    # Infinity constant is 1e20
-    A[A > +9e19] = +np.inf
-    l[l > +9e19] = +np.inf
-    u[u > +9e19] = +np.inf
-    A[A < -9e19] = -np.inf
-    l[l < -9e19] = -np.inf
-    u[u < -9e19] = -np.inf
-
-        
-    return P, q, r, A, l, u, n, m, name
-
-def determine_prob_date_mps(path):
-    '''
-    Unlike the .mat files, .mps files may contain mixed integer problems
-    and therefore need to be taken care of differently
-    '''
-    try:
-        model = gp.read(path)
-    except Exception as e:
-        print(f"Error loading problem data: {e}")
-        sys.exit(1)
-        
-    
-    variables = model.getVars()
-    constraints = model.getConstrs()
-    
-    A = model.getA()
-    
-    q = np.array([var.Obj for var in variables])
-    if model.ModelSense == GRB.MAXIMIZE:
-        q = -q
-    
-    l_const = []
-    u_const = []
-    
-    for constr in constraints:
-        if constr.Sense == gp.GRB.EQUAL:
-            l_const.append(constr.RHS)
-            u_const.append(constr.RHS)
-        elif constr.Sense == gp.GRB.LESS_EQUAL:
-            l_const.append(-np.inf)
-            u_const.append(constr.RHS)
-        elif constr.Sense == gp.GRB.GREATER_EQUAL:
-            l_const.append(constr.RHS)
-            u_const.append(np.inf)
-           
-    l_vars = []
-    u_vars = []
-     
-    for var in variables:
-        if var.VType == gp.GRB.BINARY:
-            l_vars.append(max(0.0, var.LB))
-            u_vars.append(min(1.0, var.UB))
-        else:
-            l_vars.append(var.LB if var.LB > -1e20 else -np.inf)
-            u_vars.append(var.UB if var.UB < 1e20 else np.inf)
-            
-    l = np.concatenate([l_const, l_vars])
-    u = np.concatenate([u_const, u_vars])
-    
-    I = sparse.identity(len(variables), format='csc')
-    A_full = sparse.vstack([A, I], format='csc')
-    
-    P = sparse.csc_matrix((len(variables), len(variables)))
-    
-    n = model.NumVars
-    m = model.NumConstrs + n
-    
-    A[A > +9e19] = +np.inf
-    l[l > +9e19] = +np.inf
-    u[u > +9e19] = +np.inf
-    A[A < -9e19] = -np.inf
-    l[l < -9e19] = -np.inf
-    u[u < -9e19] = -np.inf
-    
-    # Just in case, to be consistent we do the flattening and conversion operations
-    data = {
-        'P': P.astype(float).tocsc(),
-        'q': q.flatten().astype(float),
-        'A': A_full.astype(float).tocsc(),
-        'l': l.flatten().astype(float),
-        'u': u.flatten().astype(float),
-        'n': n,
-        'm': m
-    }
-    return data
-
-def is_qp_solution_optimal(qp_problem, x, y, high_accuracy=False):
-    '''
-    Check optimality condition of the QP given the
-    primal-dual solution (x, y) and the tolerance eps
-    '''
-    if high_accuracy:
-        eps_abs = EPS_HIGH
-        eps_rel = EPS_HIGH
-    else:
-        eps_abs= EPS_LOW
-        eps_rel= EPS_LOW
-
-    # Get problem matrices
-    P = qp_problem['P']
-    q = qp_problem['q']
-    A = qp_problem['A']
-    l = qp_problem['l']
-    u = qp_problem['u']
-
-    # Check primal feasibility
-    Ax = A.dot(x)
-    eps_pri = eps_abs + eps_rel * la.norm(Ax, np.inf)
-    pri_res = np.minimum(Ax - l, 0) + np.maximum(Ax - u, 0)
-
-    if la.norm(pri_res, np.inf) > eps_pri:
-        print("Error in primal residual: %.4e > %.4e" %
-              (la.norm(pri_res, np.inf), eps_pri))
-        return False
-
-    # Check dual feasibility
-    Px = P.dot(x)
-    Aty = A.T.dot(y)
-    eps_dua = eps_abs + eps_rel * np.max([la.norm(Px, np.inf),
-                                          la.norm(q, np.inf),
-                                          la.norm(Aty, np.inf)])
-    dua_res = Px + q + Aty
-
-    if la.norm(dua_res, np.inf) > eps_dua:
-        print("Error in dual residual: %.4e > %.4e" %
-              (la.norm(dua_res, np.inf), eps_dua))
-        return False
-    
-    return True
-
-def gurobi_solve(high_accuracy, solver_type, problem_dir):
+def gurobi_solve(solver_type, problem_dir):
     try:
         model = gp.read(problem_dir)
         model.setParam('OutputFlag', 0)
@@ -279,7 +86,7 @@ def gurobi_solve(high_accuracy, solver_type, problem_dir):
         model.setParam("FeasibilityTol", SETTINGS[solver_type]['FeasibilityTol'])
         model.setParam("OptimalityTol", SETTINGS[solver_type]['OptimalityTol'])
         model.setParam("TimeLimit", SETTINGS[solver_type]['TimeLimit'])
-        
+
         # Update model
         model.update()
 
@@ -445,7 +252,6 @@ def pdqp_solve_dir(high_accuracy, solver_type, problem_dir):
         print(f"PDQP solve error: {e}")
         import traceback
         traceback.print_exc()
-        data = determine_prob_date_mps(problem_dir)
         solution_dict = {
             'name': [None],
             'solver': [solver_type],
@@ -480,7 +286,7 @@ def solve_probs(solver, problem_dir_mps, high_accuracy):
             all_results.append(result)
     else:
         for prob_path, name in zip(lst_probs_paths_mps, problem_names_mps):
-            result = gurobi_solve(high_accuracy, solver_type=solver, problem_dir=prob_path)
+            result = gurobi_solve(solver_type=solver, problem_dir=prob_path)
             print(f"{name} solved")
             
             result['name'] = name
@@ -535,7 +341,10 @@ def main():
         
     # Iterate over all solvers
     print(f"problem_dir_mps: {problem_dir_mps}")
-    solvers = [pdqp, GUROBI]
+    if high_accuracy:
+        solvers = [pdqp_high, GUROBI_high]
+    else:
+        solvers = [pdqp, GUROBI]
     for s in solvers:
         solve_probs(s, problem_dir_mps, high_accuracy)
         
